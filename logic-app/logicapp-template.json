@@ -1,0 +1,271 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logicAppName": {
+      "type": "string",
+      "defaultValue": "logic-aksarc-restart-trigger",
+      "metadata": { "description": "Name for the Logic App" }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "automationAccountName": {
+      "type": "string",
+      "defaultValue": "aa-aksarc-restart",
+      "metadata": { "description": "Name of the Automation Account running Master-FleetRestart" }
+    },
+    "automationAccountResourceGroup": {
+      "type": "string",
+      "metadata": { "description": "Resource group of the Automation Account" }
+    },
+    "automationAccountSubscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]",
+      "metadata": { "description": "Subscription ID of the Automation Account (defaults to same subscription as Logic App)" }
+    }
+  },
+  "variables": {
+    "aaBaseUri": "[concat('https://management.azure.com/subscriptions/', parameters('automationAccountSubscriptionId'), '/resourceGroups/', parameters('automationAccountResourceGroup'), '/providers/Microsoft.Automation/automationAccounts/', parameters('automationAccountName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "solution": "aks-arc-restart",
+        "purpose": "user-trigger-interface"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {},
+          "triggers": {
+            "manual": {
+              "type": "Request",
+              "kind": "Http",
+              "inputs": {
+                "method": "POST",
+                "schema": {
+                  "type": "object",
+                  "required": ["namespace", "workloadType", "workloadName"],
+                  "properties": {
+                    "namespace": {
+                      "type": "string",
+                      "description": "Kubernetes namespace",
+                      "example": "production"
+                    },
+                    "workloadType": {
+                      "type": "string",
+                      "description": "deployment | statefulset | daemonset",
+                      "example": "statefulset"
+                    },
+                    "workloadName": {
+                      "type": "string",
+                      "description": "Exact name of the workload to restart",
+                      "example": "my-app"
+                    },
+                    "clusterFilter": {
+                      "type": "string",
+                      "description": "Optional Resource Graph KQL filter appended to the query. E.g. '| where tags.environment == ''prod'''",
+                      "default": ""
+                    },
+                    "initiatedBy": {
+                      "type": "string",
+                      "description": "Who triggered this restart. Defaults to the AAD caller principal or 'LogicApp'.",
+                      "default": ""
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "actions": {
+            "Initialize_RequestedBy": {
+              "type": "InitializeVariable",
+              "runAfter": {},
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "RequestedBy",
+                    "type": "string",
+                    "value": "@{if(not(empty(triggerBody()?['initiatedBy'])), triggerBody()?['initiatedBy'], if(not(empty(triggerOutputs()?['headers']?['X-MS-CLIENT-PRINCIPAL-NAME'])), triggerOutputs()?['headers']?['X-MS-CLIENT-PRINCIPAL-NAME'], 'LogicApp'))}"
+                  }
+                ]
+              }
+            },
+            "Initialize_JobGuid": {
+              "type": "InitializeVariable",
+              "runAfter": {
+                "Initialize_RequestedBy": ["Succeeded"]
+              },
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "JobGuid",
+                    "type": "string",
+                    "value": "@{guid()}"
+                  }
+                ]
+              }
+            },
+            "Initialize_WorkloadType": {
+              "type": "InitializeVariable",
+              "runAfter": {
+                "Initialize_JobGuid": ["Succeeded"]
+              },
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "WorkloadType",
+                    "type": "string",
+                    "value": "@{if(empty(triggerBody()?['workloadType']), 'statefulset', triggerBody()?['workloadType'])}"
+                  }
+                ]
+              }
+            },
+            "Create_Automation_Job": {
+              "type": "Http",
+              "runAfter": {
+                "Initialize_WorkloadType": ["Succeeded"]
+              },
+              "inputs": {
+                "method": "PUT",
+                "uri": "[concat(variables('aaBaseUri'), '/jobs/@{variables(''JobGuid'')}?api-version=2023-11-01')]",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "properties": {
+                    "runbook": {
+                      "name": "Master-FleetRestart"
+                    },
+                    "parameters": {
+                      "Namespace": "@{triggerBody()?['namespace']}",
+                      "WorkloadType": "@{variables('WorkloadType')}",
+                      "WorkloadName": "@{triggerBody()?['workloadName']}",
+                      "ClusterFilter": "@{if(empty(triggerBody()?['clusterFilter']), '', triggerBody()?['clusterFilter'])}",
+                      "InitiatedBy": "@{variables('RequestedBy')}"
+                    }
+                  }
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "audience": "https://management.azure.com/"
+                },
+                "retryPolicy": {
+                  "type": "fixed",
+                  "count": 3,
+                  "interval": "PT10S"
+                }
+              }
+            },
+            "Poll_Until_Complete": {
+              "type": "Until",
+              "runAfter": {
+                "Create_Automation_Job": ["Succeeded"]
+              },
+              "expression": "@not(contains(createArray('Running','New','Activating','Stopping','Resuming'), body('Check_Job_Status')?['properties']?['status']))",
+              "limit": {
+                "count": 70,
+                "timeout": "PT36M"
+              },
+              "actions": {
+                "Wait_30_Seconds": {
+                  "type": "Wait",
+                  "runAfter": {},
+                  "inputs": {
+                    "interval": {
+                      "count": 30,
+                      "unit": "Second"
+                    }
+                  }
+                },
+                "Check_Job_Status": {
+                  "type": "Http",
+                  "runAfter": {
+                    "Wait_30_Seconds": ["Succeeded"]
+                  },
+                  "inputs": {
+                    "method": "GET",
+                    "uri": "[concat(variables('aaBaseUri'), '/jobs/@{variables(''JobGuid'')}?api-version=2023-11-01')]",
+                    "authentication": {
+                      "type": "ManagedServiceIdentity",
+                      "audience": "https://management.azure.com/"
+                    },
+                    "retryPolicy": {
+                      "type": "fixed",
+                      "count": 3,
+                      "interval": "PT5S"
+                    }
+                  }
+                }
+              }
+            },
+            "Get_Job_Output": {
+              "type": "Http",
+              "runAfter": {
+                "Poll_Until_Complete": ["Succeeded", "Failed", "TimedOut"]
+              },
+              "inputs": {
+                "method": "GET",
+                "uri": "[concat(variables('aaBaseUri'), '/jobs/@{variables(''JobGuid'')}/output?api-version=2023-11-01')]",
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "audience": "https://management.azure.com/"
+                }
+              }
+            },
+            "Respond_to_Caller": {
+              "type": "Response",
+              "runAfter": {
+                "Get_Job_Output": ["Succeeded", "Failed"]
+              },
+              "inputs": {
+                "statusCode": "@if(equals(body('Check_Job_Status')?['properties']?['status'], 'Completed'), 200, 500)",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "jobGuid": "@variables('JobGuid')",
+                  "requestedBy": "@variables('RequestedBy')",
+                  "jobStatus": "@body('Check_Job_Status')?['properties']?['status']",
+                  "jobStartTime": "@body('Check_Job_Status')?['properties']?['startTime']",
+                  "jobEndTime": "@body('Check_Job_Status')?['properties']?['endTime']",
+                  "namespace": "@triggerBody()?['namespace']",
+                  "workloadType": "@variables('WorkloadType')",
+                  "workloadName": "@triggerBody()?['workloadName']",
+                  "clusterFilter": "@triggerBody()?['clusterFilter']",
+                  "output": "@body('Get_Job_Output')"
+                }
+              }
+            }
+          },
+          "outputs": {}
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "logicAppTriggerUrl": {
+      "type": "string",
+      "value": "[listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', parameters('logicAppName')), '/triggers/manual'), '2019-05-01').value]"
+    },
+    "logicAppPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('logicAppName')), '2019-05-01', 'Full').identity.principalId]"
+    },
+    "logicAppName": {
+      "type": "string",
+      "value": "[parameters('logicAppName')]"
+    }
+  }
+}

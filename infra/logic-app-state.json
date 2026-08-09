@@ -1,0 +1,9 @@
+{
+    "LogicAppName":  "logic-aksarc-restart-trigger",
+    "LogicAppPrincipalId":  "5b0ab973-9149-477a-bea5-07761b027f6d",
+    "TriggerUrl":  "https://prod-27.australiaeast.logic.azure.com:443/workflows/ef94af37fe8a43da9525c19496dce6c5/triggers/manual/paths/invoke?api-version=2019-05-01\u0026sp=%2Ftriggers%2Fmanual%2Frun\u0026sv=1.0\u0026sig=gTN3wVqkgfV_AdZHVTgteFNQnnZWXVehkgI16aXw9lk",
+    "ResourceGroup":  "RG-LogicApp-Mass-Pod-Restart",
+    "AutomationAccountName":  "aa-aks-pod-restart",
+    "SubscriptionId":  "e858a6b1-b4df-4533-98bf-8af3688e5f01",
+    "DeployedAt":  "2026-08-05T16:40:46.9828668+10:00"
+}

@@ -1,0 +1,56 @@
+# restart-sa.yaml
+# Apply to every AKS Arc cluster during bootstrap.
+# Creates a minimal service account scoped to rollout restarts only.
+# Apply with: kubectl apply -f restart-sa.yaml --kubeconfig <admin-kubeconfig>
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: automation-restart
+  namespace: kube-system
+  labels:
+    app: azure-automation-restart
+    managed-by: arc-automation
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: automation-restart-token
+  namespace: kube-system
+  annotations:
+    kubernetes.io/service-account.name: automation-restart
+  labels:
+    app: azure-automation-restart
+    managed-by: arc-automation
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: automation-restart-role
+  labels:
+    app: azure-automation-restart
+    managed-by: arc-automation
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets"]
+  verbs: ["get", "list", "patch"]
+- apiGroups: [""]
+  resources: ["namespaces", "pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: automation-restart-binding
+  labels:
+    app: azure-automation-restart
+    managed-by: arc-automation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: automation-restart-role
+subjects:
+- kind: ServiceAccount
+  name: automation-restart
+  namespace: kube-system

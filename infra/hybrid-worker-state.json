@@ -1,0 +1,11 @@
+{
+    "WorkerResourceGroup":  "RG-LogicApp-Mass-Pod-Restart",
+    "AutomationAccountUrl":  "https://308889e2-a740-4dd3-9449-27065704201b.jrds.ae.azure-automation.net/automationAccounts/308889e2-a740-4dd3-9449-27065704201b",
+    "AutomationAccountName":  "aa-aks-pod-restart",
+    "WorkerGroupName":  "onpremworknodes",
+    "SubscriptionId":  "e858a6b1-b4df-4533-98bf-8af3688e5f01",
+    "AutomationMiOid":  "8e51606c-c87f-4f6d-9008-cec4ca8f9bf9",
+    "TenantId":  "647ab81b-8255-4274-9b19-40e456a621ef",
+    "KeyVaultId":  "/subscriptions/e858a6b1-b4df-4533-98bf-8af3688e5f01/resourceGroups/RG-LogicApp-Mass-Pod-Restart/providers/Microsoft.KeyVault/vaults/aks-sa-accounts",
+    "WorkerLocation":  "australiaeast"
+}
