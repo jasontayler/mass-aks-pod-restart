@@ -261,7 +261,10 @@ Write-Output "  Namespace : $Namespace"
 Write-Output "  Total     : $total  Success: $totalSuccess  Failed: $totalFailed"
 Write-Output "  Duration  : ${elapsed}s"
 Write-Output "  JobId     : $jobId"
-    Write-Output "  InitiatedBy: $InitiatedBy"
+Write-Output "  InitiatedBy: $InitiatedBy"
+Write-Output "================================================================"
+
+if ($allFailures.Count -gt 0) {
     Write-Output "Failed clusters:"
     $allFailures | ForEach-Object { Write-Output "  $($_.Cluster): $($_.Error)" }
 }
