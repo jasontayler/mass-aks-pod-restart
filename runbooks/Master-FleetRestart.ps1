@@ -11,12 +11,16 @@
 #   AA-KeyVaultName      : Key Vault name
 #   AA-WorkspaceId       : Log Analytics workspace ID
 #   AA-WorkspaceKey      : Log Analytics workspace key
+#   AA-AccountName       : Automation Account name (for ARM polling + initiator lookup)
+#   AA-ResourceGroup     : Automation Account resource group (for ARM polling + initiator lookup)
 #
 # PARAMETERS (passed at job start or via Azure Portal / Logic App):
 #   -Namespace    : K8s namespace to restart in
 #   -WorkloadType : deployment | statefulset | daemonset
 #   -WorkloadName : exact name of the workload
 #   -ClusterFilter: optional Resource Graph where clause to narrow clusters
+#   -InitiatedBy  : who triggered the restart. Auto-detected from job metadata when
+#                   started via Portal or direct API call. Logic App passes it explicitly.
 
 param(
     [Parameter(Mandatory)][string]$Namespace,
@@ -25,7 +29,7 @@ param(
     [string]$ClusterFilter  = "",      # e.g. "| where tags.environment == 'prod'"
     [int]   $ShardSize      = 50,      # clusters per shard/child job
     [int]   $JobTimeoutSec  = 600,     # max wait per shard
-    [string]$InitiatedBy    = "Master-FleetRestart"
+    [string]$InitiatedBy    = ""       # blank = auto-detect from job startedBy; Logic App passes explicitly
 )
 
 Set-StrictMode -Version Latest
@@ -39,6 +43,8 @@ $subscriptionIds  = (Get-AaVar "AA-SubscriptionIds") -split ',' | ForEach-Object
 $hybridGroup      = Get-AaVar "AA-HybridWorkerGroup"
 $wsId             = Get-AaVar "AA-WorkspaceId"
 $wsKey            = Get-AaVar "AA-WorkspaceKey"
+$aaAcctName       = Get-AaVar "AA-AccountName"
+$aaRgName         = Get-AaVar "AA-ResourceGroup"
 $jobId            = if ($PSPrivateMetadata.JobId) { $PSPrivateMetadata.JobId.ToString() } else { [guid]::NewGuid().ToString() }
 
 if (-not $subscriptionIds) { throw "AA-SubscriptionIds automation variable not set" }
@@ -97,6 +103,30 @@ function Invoke-ArmApi {
 
 $armToken = Get-MsiToken "https://management.azure.com/"
 Write-Output "ARM token acquired via MSI"
+
+# ── Build AA job base URI (reused for initiator lookup and shard job polling) ─
+$aaJobBase = $null
+if ($aaAcctName -and $aaRgName) {
+    $subId0    = @($subscriptionIds)[0]
+    $aaJobBase = "https://management.azure.com/subscriptions/$subId0/resourceGroups/$aaRgName/providers/Microsoft.Automation/automationAccounts/$aaAcctName"
+} else {
+    Write-Output "  (AA-AccountName or AA-ResourceGroup not set -- initiator lookup and ARM polling disabled)"
+}
+
+# ── Resolve initiator identity ────────────────────────────────────────────────
+# Portal/API starts: AA returns '{scrubbed}' for startedBy when read by the account's own MI
+# (Azure Automation privacy redaction). Logic App passes InitiatedBy explicitly.
+if (-not $InitiatedBy -and $aaJobBase -and $PSPrivateMetadata.JobId) {
+    try {
+        $jobMeta   = Invoke-ArmApi -Uri "$aaJobBase/jobs/${jobId}?api-version=2023-11-01" -Token $armToken
+        $startedBy = $jobMeta.properties.startedBy
+        if ($startedBy -and $startedBy -ne '{scrubbed}') { $InitiatedBy = $startedBy }
+    } catch {
+        Write-Output "  (Could not resolve initiator from job metadata: $($_.Exception.Message))"
+    }
+}
+if (-not $InitiatedBy) { $InitiatedBy = "Portal" }  # AA scrubs UPN when MI reads its own job
+Write-Output "Initiated by: $InitiatedBy"
 
 # ── Discover clusters via Resource Graph ─────────────────────────────────────
 Write-Output "Discovering connected clusters via Resource Graph..."
@@ -172,17 +202,11 @@ foreach ($shard in $shards) {
 Write-Output "Waiting for $($jobs.Count) shard jobs..."
 $totalSuccess = 0; $totalFailed = 0; $allFailures = @()
 
-# Build AA job base URI from known automation variables (set once during setup)
-# Required: AA-AccountName and AA-ResourceGroup variables, plus first subscription
-$aaJobBase = $null
-try {
-    $aaAcctName = Get-AutomationVariable -Name "AA-AccountName"
-    $aaRgName   = Get-AutomationVariable -Name "AA-ResourceGroup"
-    $subId0     = @($subscriptionIds)[0]
-    $aaJobBase  = "https://management.azure.com/subscriptions/$subId0/resourceGroups/$aaRgName/providers/Microsoft.Automation/automationAccounts/$aaAcctName"
-    Write-Output "  Job polling via ARM: $aaAcctName in $aaRgName"
-} catch {
-    Write-Output "  (AA-AccountName or AA-ResourceGroup variable not set -- add these to enable ARM polling)"
+# $aaJobBase was built earlier alongside the initiator lookup
+if ($aaJobBase) {
+    Write-Output "  Polling shards via ARM REST ($aaAcctName in $aaRgName)"
+} else {
+    Write-Output "  Polling shards via Get-AutomationJob fallback"
 }
 
 foreach ($j in $jobs) {
@@ -237,8 +261,7 @@ Write-Output "  Namespace : $Namespace"
 Write-Output "  Total     : $total  Success: $totalSuccess  Failed: $totalFailed"
 Write-Output "  Duration  : ${elapsed}s"
 Write-Output "  JobId     : $jobId"
-Write-Output "================================================================"
-
+    Write-Output "  InitiatedBy: $InitiatedBy"
 if ($allFailures.Count -gt 0) {
     Write-Output "Failed clusters:"
     $allFailures | ForEach-Object { Write-Output "  $($_.Cluster): $($_.Error)" }

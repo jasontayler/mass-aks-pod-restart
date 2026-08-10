@@ -382,3 +382,36 @@ AKSArcRestart_CL
 - **No kubectl binary needed at runtime** — only for bootstrap and rotation (HCI host).
 - **Hybrid Worker machine identity** needs `Key Vault Secrets User` — this is the only Azure role needed at runtime.
 - **Bootstrap requires admin kubeconfig** — available via `Get-AksHciCredential` on the HCI host, or `az aksarc get-credentials --admin` from a machine with Contributor on the HCS resource.
+
+---
+## Using Filters
+
+```kusto
+# Single cluster
+| where name == 'az-nuc-aks01'
+
+ Multiple specific clusters
+| where name in ('az-nuc-aks01', 'az-nuc-aks02', 'az-nuc-aks03')
+
+# Name prefix (e.g. all nuc clusters)
+| where name startswith 'az-nuc'
+
+# Name contains
+| where name contains 'prod'
+
+# Tag-based
+| where tags.environment == 'prod'
+
+# Leave CLUSTERFILTER empty to target ALL connected clusters
+
+
+
+---
+
+### Known Items
+
+- **Started from	InitiatedBy in audit log
+- **Logic App	user@contoso.com (passed explicitly in request body)
+- **Azure Portal	Portal
+- **PowerShell Start-AzAutomationRunbook without -Parameters	Portal
+- **PowerShell with -Parameters @{ InitiatedBy = "your-name" }	your-name
