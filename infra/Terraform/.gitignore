@@ -1,0 +1,12 @@
+﻿# Terraform state files contain sensitive values (workspace key etc.) -- never commit
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Variable files with real values -- use terraform.tfvars.example as the schema reference
+terraform.tfvars
+*.auto.tfvars
+
+# Plan output files may contain sensitive values
+*.tfplan

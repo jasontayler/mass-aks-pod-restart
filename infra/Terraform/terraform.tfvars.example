@@ -1,0 +1,21 @@
+﻿# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored -- never commit it.
+
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+resource_group      = "rg-aksarc-automation"
+location            = "australiaeast"
+automation_name     = "aa-aksarc-restart"
+key_vault_name      = "kv-aksarc-automation"   # must be globally unique
+workspace_name      = "law-aksarc-restart"
+hybrid_worker_group = "AKSArcWorkers"
+
+# Subscriptions containing AKS Arc clusters (AA MI gets Reader on each)
+managed_cluster_sub_ids = [
+  "00000000-0000-0000-0000-000000000000",
+]
+
+# Optional: restrict Resource Graph query to a specific environment tag.
+# Leave empty to target all connected clusters in managed_cluster_sub_ids.
+environment_guard = ""
+# environment_guard = "| where tags.environment == 'prod'"
+# environment_guard = "| where tags.environment == 'nonprod'"
