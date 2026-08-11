@@ -32,12 +32,15 @@ metadata:
     app: azure-automation-restart
     managed-by: arc-automation
 rules:
-- apiGroups: ["apps"]
-  resources: ["deployments", "statefulsets", "daemonsets"]
-  verbs: ["get", "list", "patch"]
-- apiGroups: [""]
-  resources: ["namespaces", "pods"]
-  verbs: ["get", "list"]
+- apiGroups: [ "apps" ]
+  resources: [ "deployments", "statefulsets", "daemonsets" ]
+  verbs: [ "get", "list", "patch" ]
+- apiGroups: [ "" ]
+  resources: [ "namespaces", "pods" ]
+  verbs: [ "get", "list", "delete" ]
+- apiGroups: [ "policy" ]
+  resources: [ "poddisruptionbudgets" ]
+  verbs: [ "get", "list" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

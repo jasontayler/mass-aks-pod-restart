@@ -12,7 +12,10 @@ param(
     [Parameter(Mandatory)][string]$WorkloadName,
     [string]$JobId         = "",
     [string]$InitiatedBy   = "AutomationRunbook",
-    [int]   $ThrottleLimit = 50
+    [int]   $ThrottleLimit = 50,
+    # Pod-delete options -- forwarded verbatim to Worker-RestartSingleCluster.ps1
+    [string]$PodDeleteMode    = "Sequential",   # Sequential | Parallel
+    [int]   $PodDeleteDelayMs = 2000            # ms between deletions in Sequential mode
 )
 
 Set-StrictMode -Version Latest
@@ -65,6 +68,8 @@ $clusters | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
     $wsKey     = $using:_wsKey
     $saPrefix  = $using:_saPrefix
     $apiPrefix = $using:_apiPrefix
+    $podMode   = $using:PodDeleteMode
+    $podDelay  = $using:PodDeleteDelayMs
 
     $r = [PSCustomObject]@{ Cluster=$cl.name; Status="Unknown"; DurationMs=0; Error="" }
     $t0 = Get-Date
@@ -84,6 +89,8 @@ $clusters | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
             -WsKey           $wsKey `
             -SaTokenPrefix   $saPrefix `
             -ApiServerPrefix $apiPrefix `
+            -PodDeleteMode   $podMode `
+            -PodDeleteDelayMs $podDelay `
             -ErrorAction Stop
         $r.Status = "Success"
     } catch {

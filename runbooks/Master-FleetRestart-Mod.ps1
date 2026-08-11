@@ -19,9 +19,12 @@
 #
 # PARAMETERS (passed at job start or via Azure Portal / Logic App):
 #   -Namespace    : K8s namespace to restart in
-#   -WorkloadType : deployment | statefulset | daemonset
-#   -WorkloadName : exact name of the workload
+#   -WorkloadType : deployment | statefulset | daemonset | pod
+#   -WorkloadName : exact workload name, OR (when WorkloadType=pod) a label selector
+#                   string e.g. "app.kubernetes.io/name=aksarc-telemetry"
 #   -ClusterFilter: optional Resource Graph where clause to narrow clusters
+#   -PodDeleteMode    : Sequential (default) | Parallel  -- only applies when WorkloadType=pod
+#   -PodDeleteDelayMs : ms between pod deletions in Sequential mode (default 2000)
 
 param(
     [Parameter(Mandatory)][string]$Namespace,
@@ -30,7 +33,10 @@ param(
     [string]$ClusterFilter  = "",      # e.g. "| where tags.environment == 'prod'"
     [int]   $ShardSize      = 50,      # clusters per shard/child job
     [int]   $JobTimeoutSec  = 600,     # max wait per shard
-    [string]$InitiatedBy    = ""          # blank = auto-detect from job metadata; Logic App passes explicitly
+    [string]$InitiatedBy    = "",      # blank = auto-detect from job metadata; Logic App passes explicitly
+    # Pod-delete options (only used when WorkloadType = 'pod'; ignored otherwise)
+    [string]$PodDeleteMode    = "Sequential",   # Sequential | Parallel
+    [int]   $PodDeleteDelayMs = 2000            # ms between pod deletions in Sequential mode
 )
 
 Set-StrictMode -Version Latest
@@ -117,7 +123,14 @@ function Invoke-ArmApi {
         $req.ContentLength = $bytes.Length
         $s = $req.GetRequestStream(); $s.Write($bytes,0,$bytes.Length); $s.Close()
     } else { $req.ContentLength = 0 }
-    $resp = $req.GetResponse()
+    try {
+        $resp = $req.GetResponse()
+    } catch [System.Net.WebException] {
+        $errBody = if ($_.Exception.Response) {
+            [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream()).ReadToEnd()
+        } else { $_.Exception.Message }
+        throw "ARM API $Method $Uri -> HTTP $([int]$_.Exception.Response.StatusCode): $errBody"
+    }
     $json = [System.IO.StreamReader]::new($resp.GetResponseStream()).ReadToEnd()
     $resp.Close()
     if ($json) { return $json | ConvertFrom-Json }
@@ -145,6 +158,15 @@ if (-not $InitiatedBy -and $PSPrivateMetadata.JobId) {
 }
 if (-not $InitiatedBy) { $InitiatedBy = "Portal" }
 Write-Output "Initiated by: $InitiatedBy"
+
+# Normalise ClusterFilter: guard against common mistakes like "name =~ 'x'" (missing | where)
+# Accepted forms:  "| where name =~ 'x'"  or  "name =~ 'x'"  or  "| name =~ 'x'"
+if ($ClusterFilter) {
+    $cf = $ClusterFilter.Trim()
+    if     ($cf -notmatch '^\|')              { $ClusterFilter = "| where $cf" }            # no pipe at all
+    elseif ($cf -match '^\|\s*(?!where\b)')   { $ClusterFilter = $cf -replace '^\|\s*','| where ' }  # pipe but no 'where'
+    Write-Output "ClusterFilter (normalised): $ClusterFilter"
+}
 
 # ── Discover clusters via Resource Graph ─────────────────────────────────────
 Write-Output "Discovering connected clusters via Resource Graph..."
@@ -206,12 +228,14 @@ foreach ($shard in $shards) {
             runbook    = @{ name = "Shard-RestartPods" }
             runOn      = $hybridGroup
             parameters = @{
-                ClustersData = $clusterData
-                Namespace    = $Namespace
-                WorkloadType = $WorkloadType
-                WorkloadName = $WorkloadName
-                JobId        = $jobId
-                InitiatedBy  = $InitiatedBy
+                ClustersData     = $clusterData
+                Namespace        = $Namespace
+                WorkloadType     = $WorkloadType
+                WorkloadName     = $WorkloadName
+                JobId            = $jobId
+                InitiatedBy      = $InitiatedBy
+                PodDeleteMode    = $PodDeleteMode
+                PodDeleteDelayMs = $PodDeleteDelayMs.ToString()
             }
         }
     } | ConvertTo-Json -Depth 10

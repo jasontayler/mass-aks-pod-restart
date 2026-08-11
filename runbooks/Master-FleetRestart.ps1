@@ -16,11 +16,14 @@
 #
 # PARAMETERS (passed at job start or via Azure Portal / Logic App):
 #   -Namespace    : K8s namespace to restart in
-#   -WorkloadType : deployment | statefulset | daemonset
-#   -WorkloadName : exact name of the workload
+#   -WorkloadType : deployment | statefulset | daemonset | pod
+#   -WorkloadName : exact workload name, OR (when WorkloadType=pod) a label selector
+#                   string e.g. "app.kubernetes.io/name=aksarc-telemetry"
 #   -ClusterFilter: optional Resource Graph where clause to narrow clusters
 #   -InitiatedBy  : who triggered the restart. Auto-detected from job metadata when
 #                   started via Portal or direct API call. Logic App passes it explicitly.
+#   -PodDeleteMode    : Sequential (default) | Parallel  -- only applies when WorkloadType=pod
+#   -PodDeleteDelayMs : ms between pod deletions in Sequential mode (default 2000)
 
 param(
     [Parameter(Mandatory)][string]$Namespace,
@@ -29,7 +32,10 @@ param(
     [string]$ClusterFilter  = "",      # e.g. "| where tags.environment == 'prod'"
     [int]   $ShardSize      = 50,      # clusters per shard/child job
     [int]   $JobTimeoutSec  = 600,     # max wait per shard
-    [string]$InitiatedBy    = ""       # blank = auto-detect from job startedBy; Logic App passes explicitly
+    [string]$InitiatedBy    = "",      # blank = auto-detect from job metadata; Logic App passes explicitly
+    # Pod-delete options (only used when WorkloadType = 'pod'; ignored otherwise)
+    [string]$PodDeleteMode    = "Sequential",   # Sequential | Parallel
+    [int]   $PodDeleteDelayMs = 2000            # ms between pod deletions in Sequential mode
 )
 
 Set-StrictMode -Version Latest
@@ -186,12 +192,14 @@ foreach ($shard in $shards) {
         -Name         "Shard-RestartPods" `
         -RunOn        $hybridGroup `
         -Parameters   @{
-            ClustersData = $clusterData
-            Namespace    = $Namespace
-            WorkloadType = $WorkloadType
-            WorkloadName = $WorkloadName
-            JobId        = $jobId
-            InitiatedBy  = $InitiatedBy
+            ClustersData     = $clusterData
+            Namespace        = $Namespace
+            WorkloadType     = $WorkloadType
+            WorkloadName     = $WorkloadName
+            JobId            = $jobId
+            InitiatedBy      = $InitiatedBy
+            PodDeleteMode    = $PodDeleteMode
+            PodDeleteDelayMs = $PodDeleteDelayMs
         }
     $jobGuid = $job.ToString()   # Start-AutomationRunbook returns a Guid directly
     $jobs.Add([PSCustomObject]@{ JobId=$jobGuid; ShardSize=@($shard).Count })
