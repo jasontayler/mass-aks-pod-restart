@@ -101,6 +101,9 @@ function Invoke-K8sRest {
     $base = if ($ApiServer -match '^https?://') { $ApiServer } else { "https://$ApiServer" }
     $h = [System.Net.Http.HttpClientHandler]::new()
     $h.ServerCertificateCustomValidationCallback = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+    $h.UseProxy = $false   # K8s API servers are always on-prem LAN; never route through corporate proxy.
+                           # HttpClientHandler defaults to UseProxy=$true, which causes the corporate
+                           # proxy to attempt CONNECT to the cluster IP:6443 and fail with an SSL error.
     $c = [System.Net.Http.HttpClient]::new($h)
     $c.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
     $req = [System.Net.Http.HttpRequestMessage]::new(
