@@ -11,28 +11,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# 1. Get ARM token via HIMDS
-Write-Host "Getting ARM token via HIMDS..." -ForegroundColor Cyan
-$armToken = $null
+# 1. Get ARM token -- reuse Get-HimdsToken from Shared-Functions (handles the
+#    agent-based 401 challenge/response flow that a plain GetResponse() misses)
+$_sf = Join-Path $PSScriptRoot "Shared-Functions.ps1"
+if (-not (Test-Path $_sf)) { $_sf = "C:\Scripts\Shared-Functions.ps1" }
+if (-not (Test-Path $_sf)) { throw "Cannot find Shared-Functions.ps1 alongside this script or at C:\Scripts\" }
+. $_sf
 
-if ($env:IDENTITY_ENDPOINT -and $env:IDENTITY_HEADER) {
-    Write-Host "  Using IDENTITY_ENDPOINT (extension-based HW)" -ForegroundColor DarkGray
-    $url = "$($env:IDENTITY_ENDPOINT)?resource=$([uri]::EscapeDataString('https://management.azure.com/'))&api-version=2019-08-01"
-    $req = [System.Net.HttpWebRequest]::Create($url)
-    $req.Method = "GET"
-    $req.Headers.Add("X-IDENTITY-HEADER", $env:IDENTITY_HEADER)
-    $req.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
-} else {
-    Write-Host "  Using HIMDS localhost:40342 (agent-based HW)" -ForegroundColor DarkGray
-    $url = "http://localhost:40342/metadata/identity/oauth2/token?api-version=2019-11-01&resource=$([uri]::EscapeDataString('https://management.azure.com/'))"
-    $req = [System.Net.HttpWebRequest]::Create($url)
-    $req.Method = "GET"
-    $req.Headers.Add("Metadata", "true")
-    $req.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
-}
-$resp = $req.GetResponse()
-$armToken = ([System.IO.StreamReader]::new($resp.GetResponseStream()).ReadToEnd() | ConvertFrom-Json).access_token
-$resp.Close()
+Write-Host "Getting ARM token via HIMDS..." -ForegroundColor Cyan
+$armToken = Get-HimdsToken -Resource "https://management.azure.com/"
 Write-Host "  Token OK (first 20): $($armToken.Substring(0,20))..." -ForegroundColor Green
 
 # 2. Build query -- same structure as Master-FleetRestart
