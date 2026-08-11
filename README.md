@@ -283,12 +283,110 @@ One pair per cluster. Up to 25,000 secrets per Key Vault (well within 800 cluste
 
 The SA has the minimum RBAC needed:
 
-| Resource | Verbs |
-|---|---|
-| deployments, statefulsets, daemonsets | get, list, **patch** |
-| namespaces, pods | get, list |
+| Resource | API Group | Verbs |
+|---|---|---|
+| deployments, statefulsets, daemonsets | apps | get, list, **patch** |
+| namespaces, pods | core | get, list, **delete** |
+| poddisruptionbudgets | policy | get, list |
 
-Cannot: delete pods, create resources, read secrets, exec into pods, modify RBAC.
+The `delete` verb on pods and `get/list` on poddisruptionbudgets are required for `WorkloadType = pod`. They are harmless for deployment/statefulset/daemonset restarts — those paths only PATCH the controller resource.
+
+Cannot: create resources, read secrets, exec into pods, modify RBAC.
+
+---
+
+## Pod-level restart (`WorkloadType = pod`)
+
+For cases where you need to force-restart individual pods rather than trigger a rolling rollout through the controller (e.g. pods stuck in CrashLoopBackOff, GPU device plugin pods that need re-initialisation), use `WorkloadType = pod`.
+
+> **`WorkloadName` must be a Kubernetes label selector string — not a pod name or workload name.**
+>
+> Pod names always have generated suffixes (`myapp-6d8f9c-xk2p4`) so exact-name matching is not feasible across 800+ clusters. Label selectors are the correct Kubernetes primitive.
+
+### How to find the right label selector
+
+```bash
+# Show all pod labels in a namespace
+kubectl get pods -n kube-system --show-labels | grep <workload-name>
+
+# Get the selector directly from the controller
+kubectl get daemonset  <name> -n kube-system -o jsonpath='{.spec.selector.matchLabels}'
+kubectl get deployment <name> -n kube-system -o jsonpath='{.spec.selector.matchLabels}'
+```
+
+Example output: `{"app.kubernetes.io/name":"dcgm-exporter"}` → use `app.kubernetes.io/name=dcgm-exporter`.
+
+Example pod describe showing labels to look for:
+```
+Labels: app.kubernetes.io/component=dcgm-exporter
+        app.kubernetes.io/instance=dcgm-exporter
+        app.kubernetes.io/name=dcgm-exporter
+```
+→ `WorkloadName = app.kubernetes.io/name=dcgm-exporter`
+
+### Label selector syntax
+
+| Scenario | WorkloadName value |
+|---|---|
+| Simple app label | `app=my-app` |
+| Kubernetes standard name label | `app.kubernetes.io/name=dcgm-exporter` |
+| Component label | `app.kubernetes.io/component=dcgm-exporter` |
+| Multiple labels (AND) | `app=myapp,tier=backend` |
+
+> **Common mistake:** passing just the workload name, e.g. `dcgm-exporter`. This is a valid label selector meaning "pods that have a label *key* literally named `dcgm-exporter`" — almost certainly 0 results. Always use `key=value` format.
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `PodDeleteMode` | `Sequential` | `Sequential` = one pod at a time with delay; `Parallel` = all at once |
+| `PodDeleteDelayMs` | `2000` | Milliseconds between pod deletions in Sequential mode |
+
+### How pod deletion works
+
+1. Lists all pods in `Namespace` matching the label selector via K8s API
+2. Skips pods already in `Terminating` state (`deletionTimestamp` set)
+3. Skips pods with no `ownerReferences` (unmanaged — deletion would be permanent; logged as warning)
+4. Advisory PDB check — warns if `disruptionsAllowed == 0` but does **not** block deletion (see limitations)
+5. Deletes remaining pods one at a time (Sequential) or all at once (Parallel)
+
+### Limitations (by design)
+
+- **No rolling strategy** — direct `DELETE` bypasses the controller's `maxUnavailable`/`maxSurge`. Sequential mode with `PodDeleteDelayMs` is the only safety mechanism.
+- **PDB bypass** — the Kubernetes API server does **not** enforce PodDisruptionBudgets on direct DELETE requests. The PDB check is advisory: it logs a warning when `disruptionsAllowed == 0` but proceeds regardless.
+- **StatefulSets with quorum** — pods are deleted in the order the API returns them (generally ordinal). For quorum-sensitive workloads (etcd, Kafka, Zookeeper), target one pod per run using a more specific label.
+- **No rollback** — unlike a rollout restart there is no `kubectl rollout undo` equivalent after pod deletion.
+
+### PowerShell example
+
+```powershell
+Start-AzAutomationRunbook `
+  -AutomationAccountName "aa-aksarc-restart" `
+  -ResourceGroupName     "rg-aksarc-automation" `
+  -Name                  "Master-FleetRestart" `
+  -Parameters @{
+      Namespace        = "kube-system"
+      WorkloadType     = "pod"
+      WorkloadName     = "app.kubernetes.io/name=dcgm-exporter"   # label selector, NOT pod name
+      PodDeleteMode    = "Sequential"
+      PodDeleteDelayMs = "3000"
+  }
+```
+
+### Logic App / curl example
+
+```bash
+curl -X POST "<trigger-url>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace":        "kube-system",
+    "workloadType":     "pod",
+    "workloadName":     "app.kubernetes.io/name=dcgm-exporter",
+    "podDeleteMode":    "Sequential",
+    "podDeleteDelayMs": "3000",
+    "initiatedBy":      "jane.doe@contoso.com"
+  }'
+```
 
 ---
 
@@ -329,6 +427,18 @@ AKSArcRestart_CL
 AKSArcRestart_CL
 | where Status_s == "Success"
 | summarize avg(DurationMs_d) by ClusterName_s | sort by avg_DurationMs_d desc
+
+// Pod-delete runs: pods found/deleted/skipped per cluster
+AKSArcRestart_CL
+| where WorkloadType_s == "pod"
+| project TimeGenerated, ClusterName_s, WorkloadName_s,
+          PodsFound_d, PodsDeleted_d, PodsSkipped_d, Status_s, DurationMs_d
+
+// Pod restarts with skipped pods (unmanaged pods or already-Terminating)
+AKSArcRestart_CL
+| where WorkloadType_s == "pod" and PodsSkipped_d > 0
+| project TimeGenerated, ClusterName_s, WorkloadName_s,
+          PodsFound_d, PodsDeleted_d, PodsSkipped_d, ErrorDetail_s
 
 // All restart jobs: success/failure counts (last 24h)
 AKSArcRestart_CL
@@ -431,3 +541,22 @@ AKSArcRestart_CL
 
 # Environment tag filter — use actual tag key from the output above
 .\Test-GraphQuery.ps1 -SubscriptionId "8d1bab89-..." -ClusterFilter "| where tags['environment'] =~ 'nonprod'"
+
+
+
+WorkloadName = app.kubernetes.io/name=dcgm-exporter
+app.kubernetes.io/component=dcgm-exporter
+app.kubernetes.io/instance=dcgm-exporter
+app.kubernetes.io/name=dcgm-exporter
+controller-revision-hash=767584bc6d
+pod-template-generation=1
+
+Replace the existing table (currently get, list on pods only) with the accurate post-change version:
+
+Resource	API Group	Verbs
+deployments, statefulsets, daemonsets	apps	get, list, patch
+namespaces, pods	core	get, list, delete
+poddisruptionbudgets	policy	get, list
+Add note: "delete on pods and PDB get/list are required for WorkloadType = pod. Harmless for other workload types."
+
+

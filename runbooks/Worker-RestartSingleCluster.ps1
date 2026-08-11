@@ -154,14 +154,22 @@ try {
             foreach ($pdb in $pdbList) {
                 $pdbLabels = $pdb.spec.selector.matchLabels
                 if (-not $pdbLabels) { continue }
-                $disruptionsAllowed = [int]$pdb.status.disruptionsAllowed
+                # Safely read disruptionsAllowed -- absent on a newly created PDB (status not yet computed).
+                # Default to 1 (disruptions permitted) so we don't false-warn on brand-new PDBs.
+                $daProp = $pdb.status.PSObject.Properties.Item('disruptionsAllowed')
+                $disruptionsAllowed = if ($daProp) { [int]$daProp.Value } else { 1 }
                 foreach ($pod in $podList) {
                     $podLabels = $pod.metadata.labels
                     if (-not $podLabels) { continue }
-                    # Check if all PDB selector labels are present in pod labels
+                    # Use PSObject.Properties.Item() instead of $podLabels.$k to avoid
+                    # Set-StrictMode throwing when the pod doesn't have a label that the PDB
+                    # references (e.g. a PDB in kube-system matches on 'rsName' but this pod
+                    # has no 'rsName' label -- $podLabels.rsName would throw in strict mode).
                     $covered = $true
                     foreach ($k in $pdbLabels.PSObject.Properties.Name) {
-                        if ($podLabels.$k -ne $pdbLabels.$k) { $covered = $false; break }
+                        $podProp = $podLabels.PSObject.Properties.Item($k)
+                        $pdbVal  = $pdbLabels.PSObject.Properties.Item($k).Value
+                        if (-not $podProp -or $podProp.Value -ne $pdbVal) { $covered = $false; break }
                     }
                     if ($covered -and $disruptionsAllowed -eq 0) {
                         $pdbMap[$pod.metadata.name] = $pdb.metadata.name
