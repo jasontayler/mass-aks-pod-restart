@@ -415,3 +415,19 @@ AKSArcRestart_CL
 - **Azure Portal	Portal
 - **PowerShell Start-AzAutomationRunbook without -Parameters	Portal
 - **PowerShell with -Parameters @{ InitiatedBy = "your-name" }	your-name
+
+
+---
+
+### Test Scripts How too
+
+```powershell
+
+# No filter — see all clusters and their exact names/tags
+.\Test-GraphQuery.ps1 -SubscriptionId "8d1bab89-..."
+
+# With name filter (case-insensitive)
+.\Test-GraphQuery.ps1 -SubscriptionId "8d1bab89-..." -ClusterFilter "| where name =~ 'SV1407AC001-dev'"
+
+# Environment tag filter — use actual tag key from the output above
+.\Test-GraphQuery.ps1 -SubscriptionId "8d1bab89-..." -ClusterFilter "| where tags['environment'] =~ 'nonprod'"
