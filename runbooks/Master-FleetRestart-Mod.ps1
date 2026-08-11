@@ -174,6 +174,7 @@ foreach ($row in $respData) {
     })
 }
 Write-Output "  Resource Graph returned $($respData.Count) clusters across $(@($subscriptionIds).Count) subscription(s)"
+$allClusters | ForEach-Object { Write-Output "    $($_.name)  [$($_.resourceGroup)]" }
 
 $total = $allClusters.Count
 Write-Output "Total clusters discovered: $total"
