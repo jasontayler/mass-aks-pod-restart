@@ -110,16 +110,12 @@ try {
     }
 
     # 5a. Pod-delete path (WorkloadType = 'pod').
-    #     WorkloadName is treated as a Kubernetes label selector string,
-    #     e.g. "app.kubernetes.io/name=aksarc-telemetry" or "app=myapp,tier=backend".
+    #     WorkloadName is a Kubernetes label selector string,
+    #     e.g. "app.kubernetes.io/name=dcgm-exporter" or "app=myapp,tier=backend".
     #
-    # IMPORTANT LIMITATIONS (documented by design):
-    #   - Direct DELETE bypasses PodDisruptionBudgets -- the Kubernetes API server does not
-    #     enforce PDB on DELETE requests. The PDB check below is advisory (warn-only).
-    #   - No rolling strategy: Sequential mode adds a configurable delay between deletions
-    #     but does not coordinate with the controller's maxUnavailable / maxSurge.
-    #   - StatefulSet pods with quorum requirements (e.g. etcd, Kafka) should be targeted
-    #     one pod at a time via separate job runs.
+    #     The label selector IS the safety control -- the caller decides which pods to target.
+    #     Direct DELETE bypasses PodDisruptionBudgets and rolling strategy by design.
+    #     404 on DELETE is treated as success (pod already gone / already terminating).
     if ($WorkloadType.ToLower() -in @('pod','pods')) {
 
         # 5a-i. List pods matching the label selector
@@ -142,74 +138,14 @@ try {
             return
         }
 
-        # 5a-ii. Fetch PodDisruptionBudgets for advisory PDB check (warn-only; never blocks).
-        #        Note: K8s API does NOT enforce PDB on direct DELETE -- this check is informational.
-        $pdbMap = @{}   # key = pod name, value = PDB name that covers it
-        $pdbResp = Invoke-K8sRest -ApiServer $apiServer `
-            -Path "/apis/policy/v1/namespaces/$Namespace/poddisruptionbudgets" `
-            -Token $saToken -TimeoutSec 30
-        if ($pdbResp.Ok) {
-            $pdbList = ($pdbResp.Body | ConvertFrom-Json).items
-            if (-not $pdbList) { $pdbList = @() }
-            foreach ($pdb in $pdbList) {
-                $pdbLabels = $pdb.spec.selector.matchLabels
-                if (-not $pdbLabels) { continue }
-                # Safely read disruptionsAllowed -- absent on a newly created PDB (status not yet computed).
-                # Default to 1 (disruptions permitted) so we don't false-warn on brand-new PDBs.
-                $daProp = $pdb.status.PSObject.Properties.Item('disruptionsAllowed')
-                $disruptionsAllowed = if ($daProp) { [int]$daProp.Value } else { 1 }
-                foreach ($pod in $podList) {
-                    $podLabels = $pod.metadata.labels
-                    if (-not $podLabels) { continue }
-                    # Use PSObject.Properties.Item() instead of $podLabels.$k to avoid
-                    # Set-StrictMode throwing when the pod doesn't have a label that the PDB
-                    # references (e.g. a PDB in kube-system matches on 'rsName' but this pod
-                    # has no 'rsName' label -- $podLabels.rsName would throw in strict mode).
-                    $covered = $true
-                    foreach ($k in $pdbLabels.PSObject.Properties.Name) {
-                        $podProp = $podLabels.PSObject.Properties.Item($k)
-                        $pdbVal  = $pdbLabels.PSObject.Properties.Item($k).Value
-                        if (-not $podProp -or $podProp.Value -ne $pdbVal) { $covered = $false; break }
-                    }
-                    if ($covered -and $disruptionsAllowed -eq 0) {
-                        $pdbMap[$pod.metadata.name] = $pdb.metadata.name
-                        Write-Warning "[$ClusterName] Pod '$($pod.metadata.name)' is covered by PDB '$($pdb.metadata.name)' with disruptionsAllowed=0. Proceeding anyway -- direct DELETE bypasses PDB enforcement."
-                    }
-                }
-            }
-        } else {
-            Write-Host "[$ClusterName] Could not fetch PDBs (HTTP $($pdbResp.StatusCode)) -- skipping PDB check" -ForegroundColor DarkGray
-        }
+        Write-Host "[$ClusterName] Deleting $($podList.Count) pod(s) [mode: $PodDeleteMode]" -ForegroundColor Yellow
 
-        # 5a-iii. Filter pods: skip already-Terminating, skip unmanaged (no ownerReferences)
-        $toDelete = [System.Collections.Generic.List[string]]::new()
-        foreach ($pod in $podList) {
-            $podName = $pod.metadata.name
-            if ($pod.metadata.deletionTimestamp) {
-                Write-Host "[$ClusterName]   Skipping '$podName' (already Terminating)" -ForegroundColor DarkGray
-                $auditRecord.PodsSkipped++
-                continue
-            }
-            $owners = $pod.metadata.ownerReferences
-            if (-not $owners -or @($owners).Count -eq 0) {
-                Write-Warning "[$ClusterName] Skipping '$podName' -- pod has no ownerReference (not managed by any controller; deletion is permanent)"
-                $auditRecord.PodsSkipped++
-                continue
-            }
-            $toDelete.Add($podName)
-        }
-
-        if ($toDelete.Count -eq 0) {
-            Finish -Status "Skipped" -Http 200 -Err "All $($podList.Count) matched pod(s) were skipped (Terminating or unmanaged)"
-            return
-        }
-
-        Write-Host "[$ClusterName] Deleting $($toDelete.Count) pod(s) [mode: $PodDeleteMode]" -ForegroundColor Yellow
-
-        # 5a-iv. Delete pods
+        # 5a-ii. Delete pods — 404 = already gone (terminating or deleted by something else), treat as success
         $deleteErrors = [System.Collections.Generic.List[string]]::new()
+        $podNames = @($podList | ForEach-Object { $_.metadata.name })
+
         if ($PodDeleteMode.ToLower() -eq 'parallel') {
-            foreach ($podName in $toDelete) {
+            foreach ($podName in $podNames) {
                 $delResp = Invoke-K8sRest -ApiServer $apiServer `
                     -Path "/api/v1/namespaces/$Namespace/pods/$podName" `
                     -Token $saToken -Method "DELETE" -TimeoutSec 30
@@ -224,9 +160,9 @@ try {
                 }
             }
         } else {
-            # Sequential (default): pause between deletions to reduce outage risk
-            for ($pi = 0; $pi -lt $toDelete.Count; $pi++) {
-                $podName = $toDelete[$pi]
+            # Sequential (default): pause between deletions to spread the restart load
+            for ($pi = 0; $pi -lt $podNames.Count; $pi++) {
+                $podName = $podNames[$pi]
                 $delResp = Invoke-K8sRest -ApiServer $apiServer `
                     -Path "/api/v1/namespaces/$Namespace/pods/$podName" `
                     -Token $saToken -Method "DELETE" -TimeoutSec 30
@@ -239,10 +175,7 @@ try {
                     $deleteErrors.Add("$podName HTTP$($delResp.StatusCode)")
                     $auditRecord.PodsSkipped++
                 }
-                # Delay between deletions (skip after the last pod)
-                if ($pi -lt ($toDelete.Count - 1)) {
-                    Start-Sleep -Milliseconds $PodDeleteDelayMs
-                }
+                if ($pi -lt ($podNames.Count - 1)) { Start-Sleep -Milliseconds $PodDeleteDelayMs }
             }
         }
 
