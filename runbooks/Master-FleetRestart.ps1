@@ -181,7 +181,7 @@ foreach ($shard in $shards) {
     # Use pipe-delimited plain text instead of JSON -- AA CliXml-wraps string params
     # in a way that breaks ConvertFrom-Json on the Hybrid Worker. Plain text survives.
     # Format: "name|resourceGroup|subscriptionId" per line, joined by semicolon
-    $clusterData = (@($shard) | ForEach-Object { "$($_.name)|$($_.resourceGroup)|$($_.subscriptionId)" }) -join ";"
+    $clusterData = (@($shard) | ForEach-Object { "$($_.name)~$($_.resourceGroup)~$($_.subscriptionId)" }) -join ";"  # ~ is safe; | is a pipeline operator on the HW command line
     $job = Start-AutomationRunbook `
         -Name         "Shard-RestartPods" `
         -RunOn        $hybridGroup `

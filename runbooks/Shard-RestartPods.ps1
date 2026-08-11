@@ -43,7 +43,7 @@ Write-Host "KV: $_kvName  saPrefix: $_saPrefix  apiPrefix: $_apiPrefix" -Foregro
 # Plain text avoids AA CliXml/JSON double-encoding issues with string parameters.
 Write-Host "  ClustersData: $($ClustersData.Length) chars" -ForegroundColor DarkGray
 $clusters = @($ClustersData -split ';' | Where-Object { $_.Trim() } | ForEach-Object {
-    $parts = $_ -split '\|'
+    $parts = $_ -split '~'   # ~ delimiter; | was treated as a pipeline operator by the Hybrid Worker shell
     [PSCustomObject]@{ name=$parts[0]; resourceGroup=$parts[1]; subscriptionId=$parts[2] }
 })
 Write-Host "Shard starting: $($clusters.Count) clusters, workload=$WorkloadType/$WorkloadName, ns=$Namespace" -ForegroundColor Cyan

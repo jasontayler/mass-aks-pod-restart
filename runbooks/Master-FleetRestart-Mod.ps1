@@ -197,7 +197,7 @@ Write-Output "Sharding into $($shards.Count) child jobs (max $ShardSize clusters
 # channel that Start-AutomationRunbook relies on.
 $jobs = [System.Collections.Generic.List[PSCustomObject]]::new()
 foreach ($shard in $shards) {
-    $clusterData = (@($shard) | ForEach-Object { "$($_.name)|$($_.resourceGroup)|$($_.subscriptionId)" }) -join ";"
+    $clusterData = (@($shard) | ForEach-Object { "$($_.name)~$($_.resourceGroup)~$($_.subscriptionId)" }) -join ";"  # ~ is safe; | is a pipeline operator on the HW command line
     $shardJobId  = [guid]::NewGuid().ToString()
 
     $jobBody = @{
