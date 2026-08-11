@@ -161,10 +161,14 @@ Write-Output "Initiated by: $InitiatedBy"
 
 # Normalise ClusterFilter: guard against common mistakes like "name =~ 'x'" (missing | where)
 # Accepted forms:  "| where name =~ 'x'"  or  "name =~ 'x'"  or  "| name =~ 'x'"
+# NOTE: the original regex '^\|\s*(?!where\b)' had a backtracking bug -- \s* matching zero chars
+# placed the lookahead right after |, where the next char is a space (not 'w'), so it incorrectly
+# matched "| where ..." and prepended another '| where', producing invalid KQL.
+# Fixed: use -notmatch '^\|\s+where\b' which requires at least one whitespace before 'where'.
 if ($ClusterFilter) {
     $cf = $ClusterFilter.Trim()
-    if     ($cf -notmatch '^\|')              { $ClusterFilter = "| where $cf" }            # no pipe at all
-    elseif ($cf -match '^\|\s*(?!where\b)')   { $ClusterFilter = $cf -replace '^\|\s*','| where ' }  # pipe but no 'where'
+    if     ($cf -notmatch '^\|')           { $ClusterFilter = "| where $cf" }                            # no pipe at all
+    elseif ($cf -notmatch '^\|\s+where\b') { $ClusterFilter = "| where " + ($cf -replace '^\|\s*','') }  # pipe but no 'where' keyword
     Write-Output "ClusterFilter (normalised): $ClusterFilter"
 }
 

@@ -125,9 +125,10 @@ try {
         # 5a-i. List pods matching the label selector
         $labelSelector = [uri]::EscapeDataString($WorkloadName)
         Write-Verbose "Listing pods with labelSelector: $WorkloadName"
+        # TimeoutSec 45: pod LIST responses can be large on busy API servers; 15s default is too short.
         $listResp = Invoke-K8sRest -ApiServer $apiServer `
             -Path "/api/v1/namespaces/$Namespace/pods?labelSelector=$labelSelector" `
-            -Token $saToken
+            -Token $saToken -TimeoutSec 45
         if (-not $listResp.Ok) {
             throw "LIST pods returned HTTP $($listResp.StatusCode): $($listResp.Body.Substring(0,[Math]::Min(200,$listResp.Body.Length)))"
         }
@@ -146,7 +147,7 @@ try {
         $pdbMap = @{}   # key = pod name, value = PDB name that covers it
         $pdbResp = Invoke-K8sRest -ApiServer $apiServer `
             -Path "/apis/policy/v1/namespaces/$Namespace/poddisruptionbudgets" `
-            -Token $saToken
+            -Token $saToken -TimeoutSec 30
         if ($pdbResp.Ok) {
             $pdbList = ($pdbResp.Body | ConvertFrom-Json).items
             if (-not $pdbList) { $pdbList = @() }
@@ -203,7 +204,7 @@ try {
             foreach ($podName in $toDelete) {
                 $delResp = Invoke-K8sRest -ApiServer $apiServer `
                     -Path "/api/v1/namespaces/$Namespace/pods/$podName" `
-                    -Token $saToken -Method "DELETE"
+                    -Token $saToken -Method "DELETE" -TimeoutSec 30
                 if ($delResp.Ok -or $delResp.StatusCode -eq 404) {
                     Write-Host "[$ClusterName]   Deleted '$podName' (HTTP $($delResp.StatusCode))" -ForegroundColor DarkGray
                     $auditRecord.PodsDeleted++
@@ -220,7 +221,7 @@ try {
                 $podName = $toDelete[$pi]
                 $delResp = Invoke-K8sRest -ApiServer $apiServer `
                     -Path "/api/v1/namespaces/$Namespace/pods/$podName" `
-                    -Token $saToken -Method "DELETE"
+                    -Token $saToken -Method "DELETE" -TimeoutSec 30
                 if ($delResp.Ok -or $delResp.StatusCode -eq 404) {
                     Write-Host "[$ClusterName]   Deleted '$podName' (HTTP $($delResp.StatusCode))" -ForegroundColor DarkGray
                     $auditRecord.PodsDeleted++
