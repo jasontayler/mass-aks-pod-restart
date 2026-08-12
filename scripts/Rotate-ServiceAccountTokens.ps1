@@ -12,6 +12,7 @@ param(
     [switch]$AutoDiscover,             # discover all clusters via Get-AksHciCluster
     [string]$KubeconfigPath = "",      # for single cluster
     [string]$SecretPrefix   = "satoken",
+    [string]$SaNamespace    = "kube-system", # K8s namespace where SA and token Secret live
     [int]   $ParallelJobs   = 5,
     [switch]$WhatIf
 )
@@ -67,18 +68,26 @@ $clusters | ForEach-Object -ThrottleLimit $ParallelJobs -Parallel {
 
         # Delete old Secret (K8s regenerates automatically when re-applied)
         Write-Host "[$($c.Name)] Deleting old SA Secret..." -ForegroundColor Yellow
-        & $kube delete secret automation-restart-token -n kube-system --kubeconfig $c.Kubeconfig `
+        $saNs = $using:SaNamespace
+        & $kube delete secret automation-restart-token -n $saNs --kubeconfig $c.Kubeconfig `
             --ignore-not-found 2>&1 | Out-Null
 
-        # Re-apply SA manifest (recreates Secret)
-        $saYaml = Join-Path $PSScriptRoot "..\k8s\restart-sa.yaml"
-        & $kube apply -f $saYaml --kubeconfig $c.Kubeconfig 2>&1 | Out-Null
+        # Re-apply SA manifest (recreates Secret); substitute namespace if not kube-system
+        $saYamlBase = Join-Path $PSScriptRoot "..\.\k8s\restart-sa.yaml"
+        if (-not (Test-Path $saYamlBase)) { $saYamlBase = "C:\Scripts\k8s\restart-sa.yaml" }
+        $effectiveYaml = $saYamlBase
+        if ($saNs -ne 'kube-system') {
+            $effectiveYaml = Join-Path $env:TEMP "restart-sa-$($saNs -replace '[^a-zA-Z0-9-]','-').yaml"
+            (Get-Content $saYamlBase -Raw) -replace 'namespace: kube-system', "namespace: $saNs" |
+                Set-Content $effectiveYaml -Encoding UTF8
+        }
+        & $kube apply -f $effectiveYaml --kubeconfig $c.Kubeconfig 2>&1 | Out-Null
 
         # Wait for new token
         $token = $null
         for ($i = 0; $i -lt 15; $i++) {
             Start-Sleep -Seconds 2
-            $secretJson = & $kube get secret automation-restart-token -n kube-system `
+            $secretJson = & $kube get secret automation-restart-token -n $saNs `
                 -o json --kubeconfig $c.Kubeconfig 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0) {
                 $obj = $secretJson | ConvertFrom-Json

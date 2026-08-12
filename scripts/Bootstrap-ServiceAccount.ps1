@@ -40,6 +40,7 @@ param(
     [switch]$AutoDiscover,                 # use Get-AksHciCluster on HCI host
     [string]$ApiServerOverride = "",       # "10.x.x.x:6443" -- skip ARM discovery
     [string]$SaYamlPath        = "",       # defaults to .\k8s\restart-sa.yaml
+    [string]$SaNamespace       = "kube-system", # K8s namespace for the SA and token Secret
     [string]$SecretPrefix      = "satoken",
     [string]$ApiServerPrefix   = "apiserver",
     [int]   $ParallelJobs      = 5,
@@ -61,7 +62,15 @@ $saYaml = if ($SaYamlPath) {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $saYaml) { throw "SA YAML not found. Specify -SaYamlPath, or place restart-sa.yaml in C:\Scripts\k8s\" }
-
+# If a non-default namespace is requested, substitute it into a temp YAML copy at apply-time.
+# This avoids editing the canonical restart-sa.yaml which defaults to kube-system.
+$effectiveYaml = $saYaml
+if ($SaNamespace -ne 'kube-system') {
+    $effectiveYaml = Join-Path $env:TEMP "restart-sa-$($SaNamespace -replace '[^a-zA-Z0-9-]','-').yaml"
+    (Get-Content $saYaml -Raw) -replace 'namespace: kube-system', "namespace: $SaNamespace" |
+        Set-Content $effectiveYaml -Encoding UTF8
+    Write-Host "SA namespace overridden to '$SaNamespace' (temp: $effectiveYaml)" -ForegroundColor Yellow
+}
 # Find kubectl
 $kube = Get-Command kubectl -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 if (-not $kube) {
@@ -153,12 +162,12 @@ foreach ($c in $clusters) {
         $ctxArgs = if ($c.Context) { @("--context", $c.Context) } else { @() }
 
         if (-not $WhatIf) {
-            $out = & $kube apply -f $saYaml --kubeconfig $c.Kubeconfig @ctxArgs 2>&1
+            $out = & $kube apply -f $effectiveYaml --kubeconfig $c.Kubeconfig @ctxArgs 2>&1
             if ($LASTEXITCODE -ne 0) { throw "kubectl apply failed: $($out -join ' ')" }
             Write-Host "[$($c.Name)] SA applied OK" -ForegroundColor Green
 
             # Bug 4 fix: verify the SA actually landed on THIS cluster before continuing.
-            $verifySa = & $kube get sa automation-restart -n kube-system `
+            $verifySa = & $kube get sa automation-restart -n $SaNamespace `
                 --kubeconfig $c.Kubeconfig @ctxArgs `
                 -o jsonpath="{.metadata.name}" 2>&1
             if ($LASTEXITCODE -ne 0 -or $verifySa -ne "automation-restart") {
@@ -170,7 +179,7 @@ foreach ($c in $clusters) {
             $token = $null
             for ($i = 0; $i -lt 15; $i++) {
                 Start-Sleep -Seconds 2
-                $secretJson = & $kube get secret automation-restart-token -n kube-system `
+                $secretJson = & $kube get secret automation-restart-token -n $SaNamespace `
                     -o json --kubeconfig $c.Kubeconfig @ctxArgs 2>&1 | Out-String
                 if ($LASTEXITCODE -eq 0) {
                     $secretObj = $secretJson | ConvertFrom-Json

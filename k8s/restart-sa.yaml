@@ -2,6 +2,10 @@
 # Apply to every AKS Arc cluster during bootstrap.
 # Creates a minimal service account scoped to rollout restarts only.
 # Apply with: kubectl apply -f restart-sa.yaml --kubeconfig <admin-kubeconfig>
+#
+# NOTE: The default namespace below is 'kube-system'. When using Bootstrap-ServiceAccount.ps1
+# or Rotate-ServiceAccountTokens.ps1 with -SaNamespace <ns>, the scripts substitute the
+# namespace at apply-time into a temp YAML copy — this file is never modified.
 
 apiVersion: v1
 kind: ServiceAccount
