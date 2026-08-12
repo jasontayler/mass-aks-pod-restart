@@ -1,0 +1,632 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# 🔄 AKS Arc — Fleet Pod Restart\r\n\r\nUse this workbook to restart a Kubernetes workload (**Deployment, StatefulSet, DaemonSet, or Pods**) across one or many AKS Arc connected clusters simultaneously.  \r\nRestarts are executed by the `Master-FleetRestart` Azure Automation runbook via a direct ARM job PUT — no Logic App required.\r\n\r\n**Workflow:**  \r\n1. Fill in **Connection Settings** (one-time, save the workbook after).  \r\n2. Set the **Workload Target** (namespace, type, name).  \r\n3. **Select Clusters** — or leave all rows unselected to target every connected cluster.  \r\n4. Review the summary and click **▶ Start Fleet Restart**.  \r\n\r\n---\r\n\r\n> ⚠️ **RBAC required:** Your account must have `Automation Operator` (or higher) on the Automation Account to create jobs.\r\n\r\n> ℹ️ **Audit log:** Per-cluster results appear in the `AKSArcRestart_CL` Log Analytics table within ~2 minutes of job completion."
+      },
+      "name": "text-header"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\r\n\r\n### ⚙️ Connection Settings\r\n\r\nEnter these once — they point the workbook at your Automation Account and Log Analytics workspace."
+      },
+      "name": "text-config-header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlItem/1.0",
+        "parameters": [
+          {
+            "id": "11111111-1111-1111-1111-111111111101",
+            "version": "KqlParameterItem/1.0",
+            "name": "AASubscriptionId",
+            "label": "AA Subscription ID",
+            "type": 1,
+            "isRequired": true,
+            "value": "",
+            "description": "Subscription ID (GUID) that contains the Automation Account, e.g. e858a6b1-b4df-4533-98bf-8af3688e5f01"
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111102",
+            "version": "KqlParameterItem/1.0",
+            "name": "AAResourceGroup",
+            "label": "AA Resource Group",
+            "type": 1,
+            "isRequired": true,
+            "value": "",
+            "description": "Resource group that contains the Automation Account, e.g. RG-LogicApp-Mass-Pod-Restart"
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111103",
+            "version": "KqlParameterItem/1.0",
+            "name": "AAAccountName",
+            "label": "Automation Account Name",
+            "type": 1,
+            "isRequired": true,
+            "value": "",
+            "description": "Name of the Azure Automation Account, e.g. aa-aks-pod-restart"
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111104",
+            "version": "KqlParameterItem/1.0",
+            "name": "WorkspaceId",
+            "label": "Log Analytics Workspace",
+            "type": 2,
+            "isRequired": true,
+            "query": "resources\r\n| where type == \"microsoft.operationalinsights/workspaces\"\r\n| project value = id, label = strcat(name, \" (\", resourceGroup, \")\")\r\n| order by label asc",
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources",
+            "crossComponentResources": [
+              "value::all"
+            ],
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "description": "Select the Log Analytics workspace that receives the AKSArcRestart_CL audit logs"
+          }
+        ],
+        "style": "above",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components"
+      },
+      "name": "params-config",
+      "styleSettings": {
+        "showBorder": true
+      }
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\r\n\r\n### 🎯 Workload Target\r\n\r\nSpecify the Kubernetes workload to restart. The same workload name is applied to every selected cluster."
+      },
+      "name": "text-workload-header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlItem/1.0",
+        "parameters": [
+          {
+            "id": "11111111-1111-1111-1111-111111111105",
+            "version": "KqlParameterItem/1.0",
+            "name": "WorkloadType",
+            "label": "Workload Type",
+            "type": 2,
+            "isRequired": true,
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "jsonData": "[{\"value\":\"deployment\",\"label\":\"Deployment\"},{\"value\":\"statefulset\",\"label\":\"StatefulSet\"},{\"value\":\"daemonset\",\"label\":\"DaemonSet\"},{\"value\":\"pod\",\"label\":\"Pod (by label selector)\"}]",
+            "value": "deployment"
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111106",
+            "version": "KqlParameterItem/1.0",
+            "name": "Namespace",
+            "label": "Namespace",
+            "type": 1,
+            "isRequired": true,
+            "value": "",
+            "description": "Kubernetes namespace, e.g. production"
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111107",
+            "version": "KqlParameterItem/1.0",
+            "name": "WorkloadName",
+            "label": "Workload Name",
+            "type": 1,
+            "isRequired": true,
+            "value": "",
+            "description": "Exact name for Deployment/StatefulSet/DaemonSet. For Pod type: a label selector, e.g. app.kubernetes.io/name=my-api"
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111108",
+            "version": "KqlParameterItem/1.0",
+            "name": "PodDeleteMode",
+            "label": "Pod Delete Mode",
+            "type": 2,
+            "isRequired": true,
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "jsonData": "[{\"value\":\"Sequential\",\"label\":\"Sequential — safe, 2 s gap between pod deletions\"},{\"value\":\"Parallel\",\"label\":\"Parallel — fastest, all pods deleted simultaneously\"}]",
+            "value": "Sequential"
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111109",
+            "version": "KqlParameterItem/1.0",
+            "name": "InitiatedBy",
+            "label": "Initiated By (audit label)",
+            "type": 1,
+            "isRequired": false,
+            "value": "",
+            "description": "Optional. Recorded in the audit log. Defaults to your AAD UPN if left blank."
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components"
+      },
+      "name": "params-workload"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\r\n\r\n## Step 1 — Select Clusters\r\n\r\nCheck the clusters to include in the restart.  \r\n**Leave all rows unchecked to target every connected cluster** (full fleet restart, 800+ clusters).  \r\nUse the column filter icons or the search row to narrow by name, resource group, environment tag, or location."
+      },
+      "name": "text-step1"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "resources\r\n| where type == \"microsoft.kubernetes/connectedclusters\"\r\n| where properties.connectivityStatus == \"Connected\"\r\n| extend environment = coalesce(tostring(tags.environment), tostring(tags.Environment), tostring(tags.Env), \"\")\r\n| extend k8sVersion = tostring(properties.kubernetesVersion)\r\n| project name, resourceGroup, subscriptionId, environment, location, k8sVersion\r\n| order by name asc",
+        "size": 0,
+        "title": "Connected AKS Arc Clusters",
+        "queryType": 1,
+        "resourceType": "microsoft.resourcegraph/resources",
+        "crossComponentResources": [
+          "value::all"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "name",
+              "formatter": 1,
+              "formatOptions": {}
+            },
+            {
+              "columnMatch": "environment",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "icons",
+                "thresholdsGrid": [
+                  {
+                    "operator": "contains",
+                    "thresholdValue": "prod",
+                    "representation": "Sev0",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "contains",
+                    "thresholdValue": "dev",
+                    "representation": "Sev3",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "unknown",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            },
+            {
+              "columnMatch": "k8sVersion",
+              "formatter": 1,
+              "formatOptions": {}
+            }
+          ],
+          "rowLimit": 1000,
+          "filter": true,
+          "multiSelect": true,
+          "exportedParameters": [
+            {
+              "fieldName": "name",
+              "parameterName": "SelectedClusterNames",
+              "parameterType": 1,
+              "quote": "",
+              "isSingleSelect": false,
+              "delimiter": ","
+            }
+          ]
+        }
+      },
+      "name": "query-clusters"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlItem/1.0",
+        "parameters": [
+          {
+            "id": "11111111-1111-1111-1111-111111111110",
+            "version": "KqlParameterItem/1.0",
+            "name": "NewJobId",
+            "label": "Job GUID (auto-generated)",
+            "type": 1,
+            "isRequired": true,
+            "query": "print new_guid()",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "{WorkspaceId}"
+            ],
+            "description": "Auto-generated from Log Analytics. Click \u27f3 between restarts in the same session to get a fresh GUID."
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111112",
+            "version": "KqlParameterItem/1.0",
+            "name": "SelectedClusterNames",
+            "label": "Target Clusters (multi-select — empty = all clusters)",
+            "type": 2,
+            "isRequired": false,
+            "multiSelect": true,
+            "quote": "",
+            "delimiter": ",",
+            "query": "resources\r\n| where type == \"microsoft.kubernetes/connectedclusters\"\r\n| where properties.connectivityStatus == \"Connected\"\r\n| project value = name, label = strcat(name, \" (\", resourceGroup, \")\" )\r\n| order by label asc",
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources",
+            "crossComponentResources": [
+              "value::all"
+            ],
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "value": [],
+            "description": "Select one or more clusters to restart. Leave empty to target all connected clusters."
+          },
+          {
+            "id": "11111111-1111-1111-1111-111111111113",
+            "version": "KqlParameterItem/1.0",
+            "name": "ClusterFilter",
+            "label": "Cluster Filter KQL (auto — computed from selection)",
+            "type": 2,
+            "isRequired": false,
+            "query": "let names = \"{SelectedClusterNames}\";\r\nlet f = iff(isempty(names), \"\",\r\n    strcat(\"| where name in~ ('\", replace_string(names, \",\", \"','\"), \"')\"));\r\nprint value = f\r\n| extend label = iff(isempty(value), \"(all clusters — no filter)\", value)",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "{WorkspaceId}"
+            ],
+            "value": "",
+            "description": "Auto-built KQL fragment passed to Master-FleetRestart as -ClusterFilter. Empty = target all clusters."
+          }
+        ],
+        "style": "above",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "params-computed",
+      "styleSettings": {
+        "showBorder": true
+      }
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\r\n\r\n## Step 2 — Review & Launch\r\n\r\nVerify the parameters below before submitting. All values are substituted live.\r\n\r\n| Parameter | Value |\r\n|---|---|\r\n| **Workload Type** | {WorkloadType} |\r\n| **Namespace** | {Namespace} |\r\n| **Workload Name** | {WorkloadName} |\r\n| **Pod Delete Mode** | {PodDeleteMode} |\r\n| **Initiated By** | {InitiatedBy} |\r\n| **Selected Clusters** | {SelectedClusterNames} |\r\n| **Cluster Filter (KQL)** | {ClusterFilter} |\r\n\r\n> ℹ️ If **Selected Clusters** is blank, the job targets **all** connected clusters."
+      },
+      "name": "text-step2"
+    },
+    {
+      "type": 11,
+      "content": {
+        "version": "LinkItem/1.0",
+        "style": "primary",
+        "links": [
+          {
+            "id": "22222222-2222-2222-2222-222222222201",
+            "cellValue": "",
+            "linkTarget": "ArmAction",
+            "linkLabel": "▶  Start Fleet Restart",
+            "preText": "",
+            "postText": "",
+            "style": "primary",
+            "armActionContext": {
+              "path": "/subscriptions/{AASubscriptionId}/resourceGroups/{AAResourceGroup}/providers/Microsoft.Automation/automationAccounts/{AAAccountName}/jobs/{NewJobId}?api-version=2019-06-01",
+              "headers": [],
+              "body": "{\"properties\":{\"runbook\":{\"name\":\"Master-FleetRestart\"},\"parameters\":{\"Namespace\":\"{Namespace}\",\"WorkloadType\":\"{WorkloadType}\",\"WorkloadName\":\"{WorkloadName}\",\"ClusterFilter\":\"{ClusterFilter}\",\"InitiatedBy\":\"{InitiatedBy}\",\"PodDeleteMode\":\"{PodDeleteMode}\"}}}",
+              "httpMethod": "PUT",
+              "description": "## ▶ Confirm Fleet Restart\r\n\r\nYou are about to create an Azure Automation job to restart the following workload:\r\n\r\n| Parameter | Value |\r\n|---|---|\r\n| **Workload Type** | {WorkloadType} |\r\n| **Namespace** | {Namespace} |\r\n| **Workload Name** | {WorkloadName} |\r\n| **Pod Delete Mode** | {PodDeleteMode} |\r\n| **Cluster Filter** | {ClusterFilter} |\r\n| **Initiated By** | {InitiatedBy} |\r\n| **Job GUID** | {NewJobId} |\r\n\r\n> ⚠️ This will restart **{WorkloadName}** in **{Namespace}** across the selected clusters. The runbook starts immediately and cannot be cancelled once shards have dispatched to Hybrid Workers.\r\n\r\nClick **Confirm & Start** to proceed.",
+              "actionName": "Start Fleet Restart",
+              "runLabel": "Confirm & Start",
+              "cancelLabel": "Cancel"
+            }
+          }
+        ]
+      },
+      "name": "link-start-button"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\r\n\r\n## Step 3 — Monitor Active Jobs\r\n\r\nAggregated view of restart jobs from the last 2 hours, sourced from the `AKSArcRestart_CL` audit table.  \r\nScroll down for the full per-cluster audit log."
+      },
+      "name": "text-step3"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AKSArcRestart_CL\r\n| where TimeGenerated > ago(2h)\r\n| summarize\r\n    StartedAt     = min(TimeGenerated),\r\n    TotalClusters = dcount(ClusterName_s),\r\n    Succeeded     = countif(Status_s == \"Success\"),\r\n    Failed        = countif(Status_s == \"Failed\"),\r\n    Skipped       = countif(Status_s == \"Skipped\"),\r\n    Running       = countif(Status_s == \"Started\")\r\n  by JobId_g, InitiatedBy_s, WorkloadType_s, WorkloadName_s, Namespace_s\r\n| extend OverallStatus = case(\r\n    Running > 0,  \"Running\",\r\n    Failed  > 0,  \"Completed (errors)\",\r\n                  \"Completed\")\r\n| project\r\n    StartedAt,\r\n    JobId        = JobId_g,\r\n    Workload     = strcat(WorkloadType_s, \"/\", WorkloadName_s, \" (\", Namespace_s, \")\"),\r\n    Status       = OverallStatus,\r\n    Clusters     = TotalClusters,\r\n    OK           = Succeeded,\r\n    Failed,\r\n    Skipped,\r\n    Running,\r\n    InitiatedBy  = InitiatedBy_s\r\n| order by StartedAt desc\r\n| take 10",
+        "size": 0,
+        "title": "Recent Restart Jobs (last 2 h)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{WorkspaceId}"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Status",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Completed",
+                    "representation": "green",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "contains",
+                    "thresholdValue": "errors",
+                    "representation": "redBright",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Running",
+                    "representation": "yellow",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "blue",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            },
+            {
+              "columnMatch": "Failed",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": ">",
+                    "thresholdValue": "0",
+                    "representation": "redBright",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "green",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            },
+            {
+              "columnMatch": "OK",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": ">",
+                    "thresholdValue": "0",
+                    "representation": "green",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "gray",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            }
+          ],
+          "rowLimit": 10,
+          "filter": false
+        }
+      },
+      "name": "query-active-jobs"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\r\n\r\n## Step 4 — Audit History\r\n\r\nPer-cluster restart results from `AKSArcRestart_CL`. Adjust the time range to see older data.  \r\n`Status` is color-coded · `DurationMs` shows a heatbar · `ErrorDetail` is populated on failures."
+      },
+      "name": "text-step4"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlItem/1.0",
+        "parameters": [
+          {
+            "id": "33333333-3333-3333-3333-333333333301",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time Range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 172800000
+                },
+                {
+                  "durationMs": 604800000
+                }
+              ]
+            }
+          },
+          {
+            "id": "33333333-3333-3333-3333-333333333302",
+            "version": "KqlParameterItem/1.0",
+            "name": "AuditStatusFilter",
+            "label": "Filter by Status",
+            "type": 2,
+            "isRequired": false,
+            "typeSettings": {
+              "additionalResourceOptions": [
+                "value::all"
+              ],
+              "showDefault": false
+            },
+            "jsonData": "[{\"value\":\"Success\",\"label\":\"Success\"},{\"value\":\"Failed\",\"label\":\"Failed\"},{\"value\":\"NetworkError\",\"label\":\"NetworkError\"},{\"value\":\"Skipped\",\"label\":\"Skipped\"},{\"value\":\"Started\",\"label\":\"Started (in progress)\"}]",
+            "value": "value::all"
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "params-timerange"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AKSArcRestart_CL\r\n| where TimeGenerated {TimeRange}\r\n| where \"{AuditStatusFilter}\" == \"value::all\" or Status_s == \"{AuditStatusFilter}\"\r\n| project\r\n    TimeGenerated,\r\n    ClusterName  = ClusterName_s,\r\n    Namespace    = Namespace_s,\r\n    WorkloadType = WorkloadType_s,\r\n    WorkloadName = WorkloadName_s,\r\n    Status       = Status_s,\r\n    HttpStatus   = toint(HttpStatus_d),\r\n    DurationMs   = DurationMs,\r\n    InitiatedBy  = InitiatedBy_s,\r\n    JobId        = JobId_g,\r\n    ShardId      = ShardId_s,\r\n    ErrorDetail  = ErrorDetail_s\r\n| order by TimeGenerated desc",
+        "size": 0,
+        "title": "Audit Log — Per-Cluster Restart Results",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{WorkspaceId}"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Status",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Success",
+                    "representation": "green",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Failed",
+                    "representation": "redBright",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "NetworkError",
+                    "representation": "orange",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Skipped",
+                    "representation": "gray",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Started",
+                    "representation": "yellow",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "blue",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            },
+            {
+              "columnMatch": "HttpStatus",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": "==",
+                    "thresholdValue": "200",
+                    "representation": "green",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "0",
+                    "representation": "gray",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "redBright",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            },
+            {
+              "columnMatch": "DurationMs",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 30000,
+                "palette": "greenRed"
+              }
+            },
+            {
+              "columnMatch": "ErrorDetail",
+              "formatter": 1,
+              "formatOptions": {}
+            }
+          ],
+          "rowLimit": 1000,
+          "filter": true,
+          "sortBy": [
+            {
+              "itemKey": "TimeGenerated",
+              "sortOrder": 2
+            }
+          ]
+        }
+      },
+      "name": "query-audit-log"
+    }
+  ],
+  "isLocked": false,
+  "fallbackResourceIds": [],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
