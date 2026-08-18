@@ -184,10 +184,12 @@ Write-Output "Sharding into $($shards.Count) child jobs (max $ShardSize clusters
 # Start-AutomationRunbook is a native AA cmdlet (no module import needed)
 $jobs = [System.Collections.Generic.List[PSCustomObject]]::new()
 foreach ($shard in $shards) {
-    # Use pipe-delimited plain text instead of JSON -- AA CliXml-wraps string params
-    # in a way that breaks ConvertFrom-Json on the Hybrid Worker. Plain text survives.
-    # Format: "name|resourceGroup|subscriptionId" per line, joined by semicolon
-    $clusterData = (@($shard) | ForEach-Object { "$($_.name)~$($_.resourceGroup)~$($_.subscriptionId)" }) -join ";"  # ~ is safe; | is a pipeline operator on the HW command line
+    # Use plain text instead of JSON -- AA CliXml-wraps string params in a way that
+    # breaks ConvertFrom-Json on the Hybrid Worker. Plain text survives.
+    # Format: "name~resourceGroup~subscriptionId" per record, records joined by ~~
+    # NOTE: ; was changed to ~~ because ; is a PS statement separator and | is a pipeline
+    # operator -- both are misinterpreted when the HW passes params on the command line.
+    $clusterData = (@($shard) | ForEach-Object { "$($_.name)~$($_.resourceGroup)~$($_.subscriptionId)" }) -join "~~"
     $job = Start-AutomationRunbook `
         -Name         "Shard-RestartPods" `
         -RunOn        $hybridGroup `

@@ -42,11 +42,13 @@ $_apiPrefix = Get-AaVar "AA-ApiServerPrefix" "apiserver"
 if (-not $_kvName) { throw "AA-KeyVaultName automation variable not set" }
 Write-Host "KV: $_kvName  saPrefix: $_saPrefix  apiPrefix: $_apiPrefix" -ForegroundColor Cyan
 
-# Parse plain-text cluster list: "name|rg|subId;name|rg|subId;..."
-# Plain text avoids AA CliXml/JSON double-encoding issues with string parameters.
+# Parse plain-text cluster list: "name~rg~subId~~name~rg~subId~~..."
+# ~~ separates records; ~ separates fields within a record.
+# Both ; and | are avoided: ; is a PS statement separator and | is a pipeline operator --
+# both are misinterpreted when the Hybrid Worker passes parameters on the command line.
 Write-Host "  ClustersData: $($ClustersData.Length) chars" -ForegroundColor DarkGray
-$clusters = @($ClustersData -split ';' | Where-Object { $_.Trim() } | ForEach-Object {
-    $parts = $_ -split '~'   # ~ delimiter; | was treated as a pipeline operator by the Hybrid Worker shell
+$clusters = @($ClustersData -split '~~' | Where-Object { $_.Trim() } | ForEach-Object {
+    $parts = $_ -split '~'   # field delimiter within a record
     [PSCustomObject]@{ name=$parts[0]; resourceGroup=$parts[1]; subscriptionId=$parts[2] }
 })
 Write-Host "Shard starting: $($clusters.Count) clusters, workload=$WorkloadType/$WorkloadName, ns=$Namespace" -ForegroundColor Cyan

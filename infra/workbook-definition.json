@@ -254,29 +254,6 @@
             "description": "Auto-generated from Log Analytics. Click \u27f3 between restarts in the same session to get a fresh GUID."
           },
           {
-            "id": "11111111-1111-1111-1111-111111111112",
-            "version": "KqlParameterItem/1.0",
-            "name": "SelectedClusterNames",
-            "label": "Target Clusters (multi-select — empty = all clusters)",
-            "type": 2,
-            "isRequired": false,
-            "multiSelect": true,
-            "quote": "",
-            "delimiter": ",",
-            "query": "resources\r\n| where type == \"microsoft.kubernetes/connectedclusters\"\r\n| where properties.connectivityStatus == \"Connected\"\r\n| project value = name, label = strcat(name, \" (\", resourceGroup, \")\" )\r\n| order by label asc",
-            "queryType": 1,
-            "resourceType": "microsoft.resourcegraph/resources",
-            "crossComponentResources": [
-              "value::all"
-            ],
-            "typeSettings": {
-              "additionalResourceOptions": [],
-              "showDefault": false
-            },
-            "value": [],
-            "description": "Select one or more clusters to restart. Leave empty to target all connected clusters."
-          },
-          {
             "id": "11111111-1111-1111-1111-111111111113",
             "version": "KqlParameterItem/1.0",
             "name": "ClusterFilter",

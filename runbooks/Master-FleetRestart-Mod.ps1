@@ -224,7 +224,8 @@ Write-Output "Sharding into $($shards.Count) child jobs (max $ShardSize clusters
 # channel that Start-AutomationRunbook relies on.
 $jobs = [System.Collections.Generic.List[PSCustomObject]]::new()
 foreach ($shard in $shards) {
-    $clusterData = (@($shard) | ForEach-Object { "$($_.name)~$($_.resourceGroup)~$($_.subscriptionId)" }) -join ";"  # ~ is safe; | is a pipeline operator on the HW command line
+    # NOTE: ; changed to ~~ -- ; is a PS statement separator misinterpreted by the HW command line.
+    $clusterData = (@($shard) | ForEach-Object { "$($_.name)~$($_.resourceGroup)~$($_.subscriptionId)" }) -join "~~"
     $shardJobId  = [guid]::NewGuid().ToString()
 
     $jobBody = @{
