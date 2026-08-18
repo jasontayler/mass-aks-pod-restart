@@ -125,6 +125,10 @@ try {
         $listResp = Invoke-K8sRest -ApiServer $apiServer `
             -Path "/api/v1/namespaces/$Namespace/pods?labelSelector=$labelSelector" `
             -Token $saToken -TimeoutSec 45
+        if ($listResp.StatusCode -eq 404) {
+            Finish -Status "Skipped" -Http 404 -Err "Namespace '$Namespace' not found on cluster"
+            return
+        }
         if (-not $listResp.Ok) {
             throw "LIST pods returned HTTP $($listResp.StatusCode): $($listResp.Body.Substring(0,[Math]::Min(200,$listResp.Body.Length)))"
         }
