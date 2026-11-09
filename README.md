@@ -98,6 +98,7 @@ SA-Token-Pattern/
     main.bicep                    # Bicep template for core infra
     infra-state.json              # Written by Deploy-Infrastructure.ps1
     logic-app-state.json          # Written by Deploy-LogicApp.ps1 (trigger URL here)
+    workbook-definition.json      # Azure Monitor Workbook: select clusters/workloads, start restart, view audit
   k8s/
     restart-sa.yaml               # SA + ClusterRole manifest (apply to every cluster)
   logic-app/
@@ -263,6 +264,43 @@ HTTP `200` = job Completed. HTTP `500` = job Failed, Stopped, or timed out (Logi
 - No API connector or manual portal authorisation required.
 - Logic App uses a System-Assigned Managed Identity with `Automation Operator` role on the AA (assigned by `Deploy-LogicApp.ps1`).
 - The `initiatedBy` field defaults to the AAD principal name from the `X-MS-CLIENT-PRINCIPAL-NAME` header (populated when the caller is AAD-authenticated via APIM or Easy Auth).
+
+---
+
+### Step 7 (Optional) — Azure Workbook: select clusters and restart workloads from the portal
+
+[infra/workbook-definition.json](infra/workbook-definition.json) is an Azure Monitor Workbook that gives operators a point-and-click UI for fleet restarts. No Logic App is required: the **Start Fleet Restart** button issues an ARM `PUT` that creates a `Master-FleetRestart` Automation job directly, using the signed-in user's own permissions.
+
+**Deploy it:**
+
+1. Azure Portal → **Monitor** → **Workbooks** → **New** → **Advanced Editor** (`</>`).
+2. Paste the contents of `infra/workbook-definition.json` (Gallery Template type), click **Apply**, then **Save** to a resource group.
+
+**What it does:**
+
+| Section | Purpose |
+|---|---|
+| Connection Settings | One-time entry of the Automation Account subscription, resource group, name, and the Log Analytics workspace. Save the workbook afterwards so the values persist. |
+| Workload Target | Choose `WorkloadType` (Deployment, StatefulSet, DaemonSet, Pod by label selector), `Namespace`, `WorkloadName`, `PodDeleteMode` (Sequential / Parallel) and an optional `InitiatedBy` audit label. |
+| Step 1 — Select Clusters | Resource Graph grid of all **Connected** `microsoft.kubernetes/connectedclusters` (name, resource group, subscription, environment tag, location, Kubernetes version). Filter and multi-select rows. **Leave all rows unselected to target the whole fleet.** |
+| Step 2 — Review & Launch | Live summary of every parameter and the generated cluster filter, then **▶ Start Fleet Restart** with a confirmation dialog. |
+| Step 3 — Monitor Active Jobs | Per-job summary (clusters, OK, Failed, Skipped, Running) for the last 2 hours from `AKSArcRestart_CL`. |
+| Step 4 — Audit History | Per-cluster results with time range and status filters, colour-coded status/HTTP code, duration heat-bar and error details. |
+
+**How selection works:**
+
+- The selected cluster names are exported as `SelectedClusterNames` and converted into a Resource Graph fragment, e.g. `| where name in~ ('az-nuc-aks01','az-nuc-aks02')`.
+- That fragment is passed to the runbook as `-ClusterFilter`. An empty selection produces an empty filter, so **all connected clusters are restarted**.
+- A fresh job GUID is generated for each run (click the refresh icon on the parameter between restarts in the same session).
+- Parameters sent: `Namespace`, `WorkloadType`, `WorkloadName`, `ClusterFilter`, `InitiatedBy`, `PodDeleteMode`.
+
+**Requirements:**
+
+- `Automation Operator` (or higher) on the Automation Account for anyone who starts restarts.
+- `Reader` on the subscriptions containing the clusters (for the Resource Graph grid) and on the Log Analytics workspace.
+- Results appear in `AKSArcRestart_CL` roughly 2 minutes after the job completes.
+
+> For a safe first test, select a single cluster and restart the `coredns` Deployment in `kube-system`.
 
 ---
 
